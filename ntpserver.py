@@ -2,12 +2,15 @@ import datetime
 import socket
 import struct
 import time
-import Queue
-import mutex
 import threading
 import select
+import sys
+if sys.version_info[0] == 2:
+    import Queue as queue
+else:
+    import queue
 
-taskQueue = Queue.Queue()
+taskQueue = queue.Queue()
 stopFlag = False
 
 def system_to_ntp_time(timestamp):
@@ -244,18 +247,18 @@ class RecvThread(threading.Thread):
         global taskQueue,stopFlag
         while True:
             if stopFlag == True:
-                print "RecvThread Ended"
+                print("RecvThread Ended")
                 break
             rlist,wlist,elist = select.select([self.socket],[],[],1);
             if len(rlist) != 0:
-                print "Received %d packets" % len(rlist)
+                print("Received %d packets" % len(rlist))
                 for tempSocket in rlist:
                     try:
                         data,addr = tempSocket.recvfrom(1024)
                         recvTimestamp = recvTimestamp = system_to_ntp_time(time.time())
                         taskQueue.put((data,addr,recvTimestamp))
-                    except socket.error,msg:
-                        print msg;
+                    except socket.error as msg:
+                        print(msg);
 
 class WorkThread(threading.Thread):
     def __init__(self,socket):
@@ -265,7 +268,7 @@ class WorkThread(threading.Thread):
         global taskQueue,stopFlag
         while True:
             if stopFlag == True:
-                print "WorkThread Ended"
+                print("WorkThread Ended")
                 break
             try:
                 data,addr,recvTimestamp = taskQueue.get(timeout=1)
@@ -286,8 +289,8 @@ class WorkThread(threading.Thread):
                 sendPacket.recv_timestamp = recvTimestamp
                 sendPacket.tx_timestamp = system_to_ntp_time(time.time())
                 socket.sendto(sendPacket.to_data(),addr)
-                print "Sended to %s:%d" % (addr[0],addr[1])
-            except Queue.Empty:
+                print("Sended to %s:%d" % (addr[0],addr[1]))
+            except queue.Empty:
                 continue
                 
         
@@ -295,7 +298,7 @@ listenIp = "0.0.0.0"
 listenPort = 123
 socket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
 socket.bind((listenIp,listenPort))
-print "local socket: ", socket.getsockname();
+print("local socket: ", socket.getsockname());
 recvThread = RecvThread(socket)
 recvThread.start()
 workThread = WorkThread(socket)
@@ -305,11 +308,11 @@ while True:
     try:
         time.sleep(0.5)
     except KeyboardInterrupt:
-        print "Exiting..."
+        print("Exiting...")
         stopFlag = True
         recvThread.join()
         workThread.join()
         #socket.close()
-        print "Exited"
+        print("Exited")
         break
         

@@ -14,9 +14,9 @@ stopFlag = False
 
 
 class RecvThread(threading.Thread):
-    def __init__(self, socket):
+    def __init__(self, sock):
         threading.Thread.__init__(self)
-        self.socket = socket
+        self.sock = sock
 
     def run(self):
         global taskQueue, stopFlag
@@ -24,7 +24,7 @@ class RecvThread(threading.Thread):
             if stopFlag:
                 print("RecvThread Ended")
                 break
-            rlist, wlist, elist = select.select([self.socket], [], [], 1)
+            rlist, wlist, elist = select.select([self.sock], [], [], 1)
             if len(rlist) != 0:
                 print("Received %d packets" % len(rlist))
                 for tempSocket in rlist:
@@ -37,9 +37,9 @@ class RecvThread(threading.Thread):
 
 
 class WorkThread(threading.Thread):
-    def __init__(self, socket):
+    def __init__(self, sock):
         threading.Thread.__init__(self)
-        self.socket = socket
+        self.sock = sock
 
     def run(self):
         global taskQueue, stopFlag
@@ -68,7 +68,7 @@ class WorkThread(threading.Thread):
                 sendPacket.recv_timestamp = recvTimestamp
                 sendPacket.tx_timestamp = ntplib.system_to_ntp_time(
                         time.time())
-                socket.sendto(sendPacket.to_data(), addr)
+                self.sock.sendto(sendPacket.to_data(), addr)
                 print("Sended to %s:%d" % (addr[0], addr[1]))
             except queue.Empty:
                 continue
@@ -76,12 +76,13 @@ class WorkThread(threading.Thread):
 
 listenIp = "0.0.0.0"
 listenPort = 123
-socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-socket.bind((listenIp, listenPort))
-print("local socket: ", socket.getsockname())
-recvThread = RecvThread(socket)
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind((listenIp, listenPort))
+print("local socket: ", sock.getsockname())
+recvThread = RecvThread(sock)
 recvThread.start()
-workThread = WorkThread(socket)
+workThread = WorkThread(sock)
 workThread.start()
 
 while True:
@@ -92,6 +93,6 @@ while True:
         stopFlag = True
         recvThread.join()
         workThread.join()
-        # socket.close()
+        sock.close()
         print("Exited")
         break

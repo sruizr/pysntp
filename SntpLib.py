@@ -9,8 +9,9 @@ import logging.handlers
 import argparse
 import netifaces
 import random
+import queue
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 class TimeToHighLow:
     """Use descriptor rather than having to repeat a bunch of properties"""
@@ -74,7 +75,7 @@ def get_network_addresses():
 def setup_logger(logger, level=logging.INFO, file_path=None):
     logger.setLevel(level)
     console_formatter = logging.Formatter(
-            fmt='%(asctime)s - %(levelname)s - %(message)s')
+            fmt='%(asctime)s - %(levelname)s - %(module)s - %(lineno)d - %(message)s')
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(console_formatter)
     logger.addHandler(console_handler)
@@ -233,11 +234,11 @@ class NTPPacket:
       |                                                               |
       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+'''
         packet_str = f'''\
-LI|VN|Mode|Stratum|Poll|Precision: {self.leap}|{self.version}|{self.mode}|{self.stratum}|{self.poll}|{self.precision}
+LI|VN|Mode|Stratum|Poll|Precision: {self.leap}|{self.version}|{self.mode}-{NTP.MODE_TABLE[self.mode]}|{self.stratum}|{self.poll}|{self.precision}
 Root Delay                       : {self.root_delay}
 Root Dispersion                  : {self.root_dispersion}
 Reference Identifier             : {self.ref_id}
-Reference Timestamp (64)         : {self.get_timestamp_string(self.ref_timestamp)}  : {self.ref_timestamp} 
+Reference Timestamp (64)         : {self.get_timestamp_string(self.ref_timestamp)} : {self.ref_timestamp} 
 Originate Timestamp (64)         : {self.get_timestamp_string(self.orig_timestamp)} : {self.orig_timestamp}
 Receive Timestamp (64)           : {self.get_timestamp_string(self.recv_timestamp)} : {self.recv_timestamp}
 Transmit Timestamp (64)          : {self.get_timestamp_string(self.tx_timestamp)}   : {self.tx_timestamp}'''
@@ -313,14 +314,19 @@ Transmit Timestamp (64)          : {self.get_timestamp_string(self.tx_timestamp)
         instance.tx_timestamp_low    = unpacked[14]
         return instance
 
-class SntpServer:
-    def __init__(self,socket, broadcast_interval, port):
-        self.socket = socket
-        self.broadcast_interval = broadcast_interval
-        logging.debug("Broadcast interval set to: %d", broadcast_interval)
+class SntpCore:
+    def __init__(self,address, port, wait_interval, client=False):
+        sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+        sock.bind((address,port))
+        logger.info("local socket: %s", sock.getsockname());
+        self.socket = sock
+        self.wait_interval = wait_interval
+        logging.debug("Broadcast interval set to: %d", wait_interval)
         self.port = port
+        self.client=client
+        self.send_queue = queue.Queue()
 
-        if broadcast_interval:
+        if wait_interval:
             self.interface_addresses, self.broadcast_addresses = get_network_addresses()
             logger.debug("broadcast addresses: %s", self.broadcast_addresses)
         else:
@@ -330,69 +336,62 @@ class SntpServer:
         "override me"
         pass
 
+    def prepare_tx_outbound(self, timestamp, addrs):
+        "override me"
+        raise NotImplementedError("Need to override prepare_outbound method")
+
+    def handle_received_packet(self, timestamp, addr, data):
+        "override me"
+        pkt = NTPPacket.from_data(data)
+        #logger.debug("Received Packet details: \n%s", pkt)
+        return pkt
+
+
     def run(self):
-        last_broadcast_time = time.time()
+        last_output_time = time.time()
         while True:
             rlist,wlist,elist = select.select([self.socket],[self.socket],[],1);
             if len(rlist) != 0:
-                for tempSocket in rlist:
-                    try:
-                        data,addr = tempSocket.recvfrom(1024)
-                        logger.info("Received packet from %s", addr[0])
-                        if addr[0] in self.interface_addresses:
-                            logger.debug("Ignoring broadcast from self")
-                            continue
-                    except socket.error as msg:
-                        logging.critical(msg);
-                    recvTimestamp = time.time()
-                    self.send_response(data,addr,recvTimestamp)
+                sock = rlist[0]
+                try:
+                    data,addr = sock.recvfrom(1024)
+                except socket.error as msg:
+                    logging.critical(msg);
+                logger.info("Received packet from %s", addr[0])
+                recvTimestamp = time.time()
+                self.handle_received_packet(recvTimestamp,addr,data)
             if len(wlist) != 0:
-                current_time = time.time()
-                if self.broadcast_interval and current_time - last_broadcast_time > self.broadcast_interval:
-                    last_broadcast_time = current_time
-                    for tempSocket in wlist:
-                        self.send_broadcast(tempSocket)
+                sock = wlist[0]
+                if not self.send_queue.empty():
+                    pkt,addr = self.send_queue.get()
+                    self.send_packet(sock, pkt, addr)
+                else:
+                    current_time = time.time()
+                    if self.wait_interval and current_time - last_output_time > self.wait_interval:
+                        last_output_time = current_time
+                        self.prepare_tx_outbound(current_time, self.broadcast_addresses)
             time.sleep(0.1)
 
-    def send_broadcast(self, socket):
-        broadcastPacket = NTPPacket(tx_timestamp = time.time(), mode=5)
-        broadcastPacket.poll = 10
-        broadcastPacket.ref_timestamp = broadcastPacket.tx_timestamp-5
-        self.pre_send_hook(broadcastPacket)
-        logger.debug("Broadcast Packet details: \n%s", broadcastPacket)
-        for bcast_address in self.broadcast_addresses:
-            self.socket.sendto(broadcastPacket.to_data(),(bcast_address, self.port))
-            logger.info("Sending broadcast packet to %s:%d", bcast_address,self.port)
+    def prepare_client_request(self, socket):
+        request = NTPPacket(tx_timestamp = time.time())
+        request.mode = 3 #client
+        request.stratum = 0
+        request.poll = 0
+        request.precision = 0
+        return request
 
-    def prepare_response(self, data, recvTimestamp):
-        recvPacket = NTPPacket.from_data(data)
-        logger.debug("Received Packet details: \n%s", recvPacket)
-        sendPacket = NTPPacket(version=recvPacket.version,mode=4)
-        '''
-        sendPacket.precision = 0xfa
-        sendPacket.ref_id = 0x808a8c2c
-        '''
-        sendPacket.orig_timestamp_high = recvPacket.tx_timestamp_high
-        sendPacket.orig_timestamp_low = recvPacket.tx_timestamp_low
-        sendPacket.ref_timestamp = recvTimestamp-5
-        sendPacket.recv_timestamp = recvTimestamp
-        sendPacket.tx_timestamp = time.time()
-        self.pre_send_hook(sendPacket)
-        return sendPacket
+    def send_packet(self, socket, pkt, addr):
+        self.pre_send_hook(pkt)
+        combined_addr = addr,self.port
+        self.socket.sendto(pkt.to_data(),combined_addr)
+        logger.info("Sending packet to %s:%d", combined_addr[0], combined_addr[1])
+        #logger.debug("Sent Packet details: \n%s", pkt)
 
-
-    def send_response(self, data, addr, recvTimestamp):
-        sendPacket = self.prepare_response(data, recvTimestamp)
-        self.socket.sendto(sendPacket.to_data(),addr)
-        logger.info("Sending response packet to %s:%d", addr[0],addr[1])
-        logger.debug("Sent Packet details: \n%s", sendPacket)
-
-class SntpServerError(SntpServer):
+class InjectError(SntpCore):
     """Class which injects errors into the response"""
 
-    def __init__(self, *args, p_error, error_list=None, **kwargs):
+    def __init__(self, *args, p_error=0, error_list=None, **kwargs):
         super().__init__(*args, **kwargs)
-        logger.debug(error_list)
         if error_list:
             self.error_list = [getattr(self, n) for n in error_list]
         else:
@@ -425,11 +424,13 @@ class SntpServerError(SntpServer):
         pkt.version = new_version
 
     def pre_send_hook(self, pkt):
+        print("Does this happen?")
         if random.random() < self.p_error:
             random.choice(self.error_list)(pkt)
 
+
 def get_parser():
-    parser = argparse.ArgumentParser(description='SNTP server')
+    parser = argparse.ArgumentParser()
     parser.add_argument('-p', '--port', type=int, default=123,
         help='The port to listen on, defaults to 123')
     parser.add_argument('-a', '--address', default='0.0.0.0',
@@ -437,38 +438,7 @@ def get_parser():
     parser.add_argument('-v', action='store_true', help='use verbose logging')
     parser.add_argument('-l', nargs=1, metavar='log_file_path',
             help='additionally log to a file')
-    parser.add_argument('-b', type=int, default=0,
-            help='broadcast_interval in secs, defaults to 0 (no broadcast)')
     parser.add_argument('-e', type=float, default=0,
             help='Probability of error injection, float 0-1, defaults to 0')
     parser.add_argument('--errors', nargs='+', default=None, help='error functions to randomly invoke')
-    return parser.parse_args()
-
-if __name__ == '__main__':
-
-    p = get_parser()
-
-    log_file = None
-    if p.l:
-        log_file = p.l[0]
-    if p.v:
-        setup_logger(logger, level=logging.DEBUG, file_path=log_file)
-    else:
-        setup_logger(logger, level=logging.INFO, file_path=log_file)
-
-    socket = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-    socket.bind((p.address,p.port))
-    logger.info("local socket: %s", socket.getsockname());
-    if p.e > 0:
-        server = SntpServerError(socket, p.b, p.port, p_error = p.e,
-            error_list=p.errors)
-    else:
-        server = SntpServer(socket, p.b, p.port)
-
-    while True:
-        try:
-            server.run()
-        except KeyboardInterrupt:
-            logger.info("Exiting...")
-            break
-
+    return parser

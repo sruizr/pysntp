@@ -200,7 +200,7 @@ class NTPPacket:
     ref_timestamp = TimeToHighLow()
 
 
-    def __init__(self, version=4, mode=3, tx_timestamp=0):
+    def __init__(self, version=4, mode=4, tx_timestamp=0):
         """Constructor.
 
         Parameters:
@@ -270,12 +270,14 @@ LI|VN|Mode|Stratum|Poll|Precision: {self.leap}|{self.version}|{self.mode}|{self.
 Root Delay                       : {self.root_delay}
 Root Dispersion                  : {self.root_dispersion}
 Reference Identifier             : {self.ref_id}
-Reference Timestamp (64)         : {self.ref_timestamp}
-Originate Timestamp (64)         : {self.orig_timestamp}
-Receive Timestamp (64)           : {self.recv_timestamp}
-Transmit Timestamp (64)          : {self.tx_timestamp}'''
+Reference Timestamp (64)         : {self.get_timestamp_string(self.ref_timestamp)}  : {self.ref_timestamp} 
+Originate Timestamp (64)         : {self.get_timestamp_string(self.orig_timestamp)} : {self.orig_timestamp}
+Receive Timestamp (64)           : {self.get_timestamp_string(self.recv_timestamp)} : {self.recv_timestamp}
+Transmit Timestamp (64)          : {self.get_timestamp_string(self.tx_timestamp)}   : {self.tx_timestamp}'''
         return packet_str
 
+    def get_timestamp_string(self, timestamp):
+        return time.strftime('%Y-%m-%d-%H:%M:%S', time.localtime(timestamp))
     def to_data(self):
         """Convert this NTPPacket to a buffer that can be sent over a socket.
 
@@ -342,6 +344,7 @@ Transmit Timestamp (64)          : {self.tx_timestamp}'''
         instance.recv_timestamp_low  = unpacked[12]
         instance.tx_timestamp_high   = unpacked[13]
         instance.tx_timestamp_low    = unpacked[14]
+        return instance
 
 class WorkerThread(threading.Thread):
     def __init__(self,socket, broadcast_interval, port):
@@ -354,6 +357,8 @@ class WorkerThread(threading.Thread):
         if broadcast_interval:
             self.interface_addresses, self.broadcast_addresses = get_network_addresses()
             logger.debug("broadcast addresses: %s", self.broadcast_addresses)
+        else:
+            self.interface_addresses = []
 
     def pre_send_hook(self, pkt):
         "override me"
@@ -388,9 +393,8 @@ class WorkerThread(threading.Thread):
             time.sleep(0.1)
 
     def send_broadcast(self, socket):
-        broadcastPacket = NTPPacket(tx_timestamp = time.time())
+        broadcastPacket = NTPPacket(tx_timestamp = time.time(), mode=5)
         broadcastPacket.poll = 10
-        broadcastPacket.mode = 5
         broadcastPacket.ref_timestamp = broadcastPacket.tx_timestamp-5
         self.pre_send_hook(broadcastPacket)
         logger.debug("Broadcast Packet details: \n%s", broadcastPacket)
@@ -401,7 +405,7 @@ class WorkerThread(threading.Thread):
     def prepare_response(self, data, recvTimestamp):
         recvPacket = NTPPacket.from_data(data)
         logger.debug("Received Packet details: \n%s", recvPacket)
-        sendPacket = NTPPacket(version=3,mode=4)
+        sendPacket = NTPPacket(version=recvPacket.version,mode=4)
         '''
         sendPacket.precision = 0xfa
         sendPacket.ref_id = 0x808a8c2c
@@ -424,32 +428,43 @@ class WorkerThread(threading.Thread):
 class WorkerThreadError(WorkerThread):
     """Class which injects errors into the response"""
 
-    def __init__(self, *args, p_error, **kwargs):
+    def __init__(self, *args, p_error, error_list=None, **kwargs):
         super().__init__(*args, **kwargs)
+        logger.debug(error_list)
+        if error_list:
+            self.error_list = [getattr(self, n) for n in error_list]
+        else:
+            self.error_list = (
+                    self.originate_error,
+                    self.li_error,
+                    self.stratum_error,
+                    self.vn_error)
+
+
+
         self.p_error = p_error
 
     def originate_error(self, pkt):
-        logger.info("Injecting an error into the originate timestamp...")
+        logger.info("Injecting error: Modifying the originate timestamp...")
         pkt.orig_timestamp -= random.randint(1,1000)/10
 
     def li_error(self, pkt):
-        logger.info("Setting LI to ALARM...")
+        logger.info("Injecting error: Setting LI to ALARM...")
         pkt.leap = 3
 
     def stratum_error(self, pkt):
         new_stratum = random.choice((1,15,16))
-        logger.info("Setting stratum to: {}".format(new_stratum))
+        logger.info("Injecting error: Setting stratum to: {}".format(new_stratum))
         pkt.stratum = new_stratum
 
     def vn_error(self, pkt):
         new_version = pkt.version + random.choice((1,-1))
-        logger.info("Setting version to: {}".format(new_version))
+        logger.info("Injecting error: Setting version to: {}".format(new_version))
+        pkt.version = new_version
 
     def pre_send_hook(self, pkt):
         if random.random() < self.p_error:
-            random.choice((
-                self.originate_error, self.li_error, self.stratum_error,
-                self.vn_error))(pkt)
+            random.choice(self.error_list)(pkt)
 
 def get_parser():
     parser = argparse.ArgumentParser(description='SNTP server')
@@ -464,6 +479,7 @@ def get_parser():
             help='broadcast_interval in secs, defaults to 0 (no broadcast)')
     parser.add_argument('-e', type=float, default=0,
             help='Probability of error injection, float 0-1, defaults to 0')
+    parser.add_argument('--errors', nargs='+', default=None, help='error functions to randomly invoke')
     return parser.parse_args()
 
 if __name__ == '__main__':
@@ -482,7 +498,8 @@ if __name__ == '__main__':
     socket.bind((p.address,p.port))
     logger.info("local socket: %s", socket.getsockname());
     if p.e > 0:
-        worker_thread = WorkerThreadError(socket, p.b, p.port, p_error = p.e)
+        worker_thread = WorkerThreadError(socket, p.b, p.port, p_error = p.e,
+            error_list=p.errors)
     else:
         worker_thread = WorkerThread(socket, p.b, p.port)
     worker_thread.start()

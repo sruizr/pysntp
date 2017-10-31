@@ -10,7 +10,6 @@ logger = logging.getLogger()
 class SntpServer(InjectError):
     def handle_received_packet(self, timestamp, addr, data):
         recvPacket = super().handle_received_packet(timestamp,addr,data)
-        #could also check if packet is in broadcast mode
         if addr[0] in self.interface_addresses:
             logger.debug("Ignoring broadcast from self")
             return
@@ -21,8 +20,8 @@ class SntpServer(InjectError):
         sendPacket = NTPPacket(version=recvPacket.version,mode=4)
         sendPacket.orig_timestamp_high = recvPacket.tx_timestamp_high
         sendPacket.orig_timestamp_low = recvPacket.tx_timestamp_low
-        sendPacket.ref_timestamp = recvTimestamp-5
-        sendPacket.recv_timestamp = recvTimestamp
+        sendPacket.ref_timestamp = timestamp-5
+        sendPacket.recv_timestamp = timestamp
         sendPacket.tx_timestamp = time.time()
         logger.debug("Response Packet details: \n%s", sendPacket)
         self.send_queue.put((sendPacket,addr))
@@ -33,7 +32,7 @@ class SntpServer(InjectError):
         broadcastPacket.ref_timestamp = broadcastPacket.tx_timestamp-5
         logger.debug("Broadcast Packet details: \n%s", broadcastPacket)
         for addr in addrs:
-            self.send_queue.put((broadcastPacket,addr))
+            self.send_queue.put((broadcastPacket,(addr,self.port)))
 
 
 

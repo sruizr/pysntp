@@ -357,7 +357,7 @@ class SntpCore:
                     data,addr = sock.recvfrom(1024)
                 except socket.error as msg:
                     logging.critical(msg);
-                logger.info("Received packet from %s", addr[0])
+                logger.debug("Received packet from %s:%d", addr[0],addr[1])
                 recvTimestamp = time.time()
                 self.handle_received_packet(recvTimestamp,addr,data)
             if len(wlist) != 0:
@@ -372,19 +372,11 @@ class SntpCore:
                         self.prepare_tx_outbound(current_time, self.broadcast_addresses)
             time.sleep(0.1)
 
-    def prepare_client_request(self, socket):
-        request = NTPPacket(tx_timestamp = time.time())
-        request.mode = 3 #client
-        request.stratum = 0
-        request.poll = 0
-        request.precision = 0
-        return request
-
     def send_packet(self, socket, pkt, addr):
         self.pre_send_hook(pkt)
-        combined_addr = addr,self.port
-        self.socket.sendto(pkt.to_data(),combined_addr)
-        logger.info("Sending packet to %s:%d", combined_addr[0], combined_addr[1])
+        self.socket.sendto(pkt.to_data(),addr)
+        logger.debug("addr now: {}".format(addr))
+        logger.info("Sending packet to %s:%d", addr[0], addr[1])
         #logger.debug("Sent Packet details: \n%s", pkt)
 
 class InjectError(SntpCore):
@@ -424,7 +416,6 @@ class InjectError(SntpCore):
         pkt.version = new_version
 
     def pre_send_hook(self, pkt):
-        print("Does this happen?")
         if random.random() < self.p_error:
             random.choice(self.error_list)(pkt)
 

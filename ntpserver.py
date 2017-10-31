@@ -91,17 +91,6 @@ def setup_logger(logger, level=logging.INFO, file_path=None):
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
 
-def _to_int(timestamp):
-    """Return the integral part of a timestamp.
-
-    Parameters:
-    timestamp -- NTP timestamp
-
-    Retuns:
-    integral part
-    """
-    return int(timestamp)
-
 def _to_frac(timestamp, n=32):
     """Return the fractional part of a timestamp.
 
@@ -112,7 +101,7 @@ def _to_frac(timestamp, n=32):
     Retuns:
     fractional part
     """
-    return int(abs(timestamp - _to_int(timestamp)) * 2**n)
+    return int(abs(timestamp - int(timestamp)) * 2**n)
 
 
 class NTPException(Exception):
@@ -271,8 +260,8 @@ Transmit Timestamp (64)          : {self.get_timestamp_string(self.tx_timestamp)
                 self.stratum,
                 self.poll,
                 self.precision,
-                _to_int(self.root_delay) << 16 | _to_frac(self.root_delay, 16),
-                _to_int(self.root_dispersion) << 16 |
+                int(self.root_delay) << 16 | _to_frac(self.root_delay, 16),
+                int(self.root_dispersion) << 16 |
                 _to_frac(self.root_dispersion, 16),
                 self.ref_id,
                 self.ref_timestamp_high,

@@ -2,7 +2,6 @@ import datetime
 import socket
 import struct
 import time
-import threading
 import select
 import sys
 import logging
@@ -12,20 +11,23 @@ import netifaces
 import random
 
 logger = logging.getLogger()
-stopFlag = False
 
 class TimeToHighLow:
     """Use descriptor rather than having to repeat a bunch of properties"""
+    _SYSTEM_EPOCH = datetime.date(*time.gmtime(0)[0:3])
+    _NTP_EPOCH = datetime.date(1900, 1, 1)
+    NTP_DELTA = (_SYSTEM_EPOCH - _NTP_EPOCH).days * 24 * 3600
+    """delta between system and NTP time"""
     def __set_name__(self, owner, name):
         self.name = name
 
     def __get__(self, instance, owner):
         return self._to_time(
                 getattr(instance, self.name+'_high'),
-                getattr(instance, self.name+'_low')) - NTP.NTP_DELTA
+                getattr(instance, self.name+'_low')) - self.NTP_DELTA
 
     def __set__(self, instance, value):
-        ntp_value = value + NTP.NTP_DELTA
+        ntp_value = value + self.NTP_DELTA
         high, low = self._to_high_low(ntp_value)
         setattr(instance, self.name+'_high', high)
         setattr(instance, self.name+'_low', low)
@@ -56,8 +58,6 @@ class TimeToHighLow:
         high = int(timestamp)
         return high, int((timestamp-high)*(2**32))
 
-
-
 def get_network_addresses():
     ifaces = netifaces.interfaces()
     bcast_addresses = []
@@ -70,8 +70,6 @@ def get_network_addresses():
                     bcast_addresses.append(addr['broadcast'])
                     interface_addresses.append(addr['addr'])
     return interface_addresses, bcast_addresses
-
-
 
 def setup_logger(logger, level=logging.INFO, file_path=None):
     logger.setLevel(level)
@@ -92,19 +90,6 @@ def setup_logger(logger, level=logging.INFO, file_path=None):
                 )
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
-
-
-
-def system_to_ntp_time(timestamp):
-    """Convert a system time to a NTP time.
-
-    Parameters:
-    timestamp -- timestamp in system time
-
-    Returns:
-    corresponding NTP time
-    """
-    return timestamp + NTP.NTP_DELTA
 
 def _to_int(timestamp):
     """Return the integral part of a timestamp.
@@ -138,13 +123,7 @@ class NTPException(Exception):
 class NTP:
     """Helper class defining constants."""
 
-    _SYSTEM_EPOCH = datetime.date(*time.gmtime(0)[0:3])
-    """system epoch"""
-    _NTP_EPOCH = datetime.date(1900, 1, 1)
-    """NTP epoch"""
-    NTP_DELTA = (_SYSTEM_EPOCH - _NTP_EPOCH).days * 24 * 3600
-    """delta between system and NTP time"""
-
+    """reference identifier table"""
     REF_ID_TABLE = {
             'DNC': "DNC routing protocol",
             'NIST': "NIST public modem",
@@ -157,14 +136,14 @@ class NTP:
             'GOES': "GOES UHF environment satellite",
             'GPS': "GPS UHF satellite positioning",
     }
-    """reference identifier table"""
 
+    """stratum table"""
     STRATUM_TABLE = {
         0: "unspecified",
         1: "primary reference",
     }
-    """stratum table"""
 
+    """mode table"""
     MODE_TABLE = {
         0: "unspecified",
         1: "symmetric active",
@@ -175,23 +154,22 @@ class NTP:
         6: "reserved for NTP control messages",
         7: "reserved for private use",
     }
-    """mode table"""
 
+    """leap indicator table"""
     LEAP_TABLE = {
         0: "no warning",
         1: "last minute has 61 seconds",
         2: "last minute has 59 seconds",
         3: "alarm condition (clock not synchronized)",
     }
-    """leap indicator table"""
 
 class NTPPacket:
     """NTP packet class.
 
     This represents an NTP packet.
     """
-    _PACKET_FORMAT = "!B B B b 11I"
     """packet format to pack/unpack"""
+    _PACKET_FORMAT = "!B B B b 11I"
 
     #setup some properties by using common descriptor
     orig_timestamp = TimeToHighLow()
@@ -346,9 +324,8 @@ Transmit Timestamp (64)          : {self.get_timestamp_string(self.tx_timestamp)
         instance.tx_timestamp_low    = unpacked[14]
         return instance
 
-class WorkerThread(threading.Thread):
+class SntpServer:
     def __init__(self,socket, broadcast_interval, port):
-        threading.Thread.__init__(self)
         self.socket = socket
         self.broadcast_interval = broadcast_interval
         logging.debug("Broadcast interval set to: %d", broadcast_interval)
@@ -365,12 +342,8 @@ class WorkerThread(threading.Thread):
         pass
 
     def run(self):
-        global stopFlag
         last_broadcast_time = time.time()
         while True:
-            if stopFlag == True:
-                logger.info("WorkerThread Ended")
-                break
             rlist,wlist,elist = select.select([self.socket],[self.socket],[],1);
             if len(rlist) != 0:
                 for tempSocket in rlist:
@@ -425,7 +398,7 @@ class WorkerThread(threading.Thread):
         logger.info("Sending response packet to %s:%d", addr[0],addr[1])
         logger.debug("Sent Packet details: \n%s", sendPacket)
 
-class WorkerThreadError(WorkerThread):
+class SntpServerError(SntpServer):
     """Class which injects errors into the response"""
 
     def __init__(self, *args, p_error, error_list=None, **kwargs):
@@ -498,19 +471,15 @@ if __name__ == '__main__':
     socket.bind((p.address,p.port))
     logger.info("local socket: %s", socket.getsockname());
     if p.e > 0:
-        worker_thread = WorkerThreadError(socket, p.b, p.port, p_error = p.e,
+        server = SntpServerError(socket, p.b, p.port, p_error = p.e,
             error_list=p.errors)
     else:
-        worker_thread = WorkerThread(socket, p.b, p.port)
-    worker_thread.start()
+        server = SntpServer(socket, p.b, p.port)
 
     while True:
         try:
-            time.sleep(0.5)
+            server.run()
         except KeyboardInterrupt:
             logger.info("Exiting...")
-            stopFlag = True
-            worker_thread.join()
-            logger.info("Exited")
             break
 

@@ -10,6 +10,7 @@ import argparse
 import netifaces
 import random
 import queue
+from collections import OrderedDict as OD
 
 logger = logging.getLogger(__name__)
 
@@ -58,19 +59,6 @@ class TimeToHighLow:
         """
         high = int(timestamp)
         return high, int((timestamp-high)*(2**32))
-
-def get_network_addresses():
-    ifaces = netifaces.interfaces()
-    bcast_addresses = []
-    interface_addresses = []
-    for iface in ifaces:
-        details = netifaces.ifaddresses(iface)
-        for k, vals in details.items():
-            if k == netifaces.AF_INET:
-                for addr in vals:
-                    bcast_addresses.append(addr['broadcast'])
-                    interface_addresses.append(addr['addr'])
-    return interface_addresses, bcast_addresses
 
 def setup_logger(logger, level=logging.INFO, file_path=None):
     logger.setLevel(level)
@@ -317,6 +305,7 @@ Transmit Timestamp (64)          : {self.get_timestamp_string(self.tx_timestamp)
 class SntpCore:
     def __init__(self,address, port, wait_interval, client=False):
         sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+        self.bind_address = address
         sock.bind((address,port))
         logger.info("local socket: %s", sock.getsockname());
         self.socket = sock
@@ -327,14 +316,31 @@ class SntpCore:
         self.send_queue = queue.Queue()
 
         if wait_interval:
-            self.interface_addresses, self.broadcast_addresses = get_network_addresses()
-            logger.debug("broadcast addresses: %s", self.broadcast_addresses)
+            self.interface_addresses = self.get_network_addresses(address)
+            for k,v in self.interface_addresses.items():
+                logger.debug("interface: %s, broadcast: %s",k,v)
         else:
             self.interface_addresses = []
 
     def pre_send_hook(self, pkt):
         "override me"
         pass
+
+    def get_network_addresses(self, bind_address):
+        ifaces = netifaces.interfaces()
+        interface_broadcast_addresses = OD()
+        for iface in ifaces:
+            details = netifaces.ifaddresses(iface)
+            for k, vals in details.items():
+                if k == netifaces.AF_INET:
+                    for addr in vals:
+                        interface_broadcast_addresses[
+                                addr['addr']] = addr['broadcast']
+        if bind_address != '0.0.0.0':
+            return {bind_address:
+                    interface_broadcast_addresses[bind_address]}
+        return interface_broadcast_addresses
+
 
     def prepare_tx_outbound(self, timestamp, addrs):
         "override me"
@@ -369,7 +375,8 @@ class SntpCore:
                     current_time = time.time()
                     if self.wait_interval and current_time - last_output_time > self.wait_interval:
                         last_output_time = current_time
-                        self.prepare_tx_outbound(current_time, self.broadcast_addresses)
+                        self.prepare_tx_outbound(current_time,
+                                self.interface_addresses.values())
             time.sleep(0.1)
 
     def send_packet(self, socket, pkt, addr):

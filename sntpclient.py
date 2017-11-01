@@ -13,11 +13,12 @@ class SntpClient(InjectError):
         if addr[0] in self.interface_addresses:
             logger.debug("Ignoring request from self")
             return
-        if NTP.MODE_TABLE[recvPacket.mode] == 'client':
+        mode_str = NTP.MODE_TABLE[recvPacket.mode]
+        if mode_str == 'client':
             logger.info("Ignoring client request from potentially other client")
             return
-        #mode 4 == server
-        logger.info("Response Packet details: \n%s", recvPacket)
+        else:
+            logger.info("Received %s packet:\n%s", mode_str, recvPacket)
 
     def prepare_tx_outbound(self, timestamp, addrs):
         #mode == 3 == client

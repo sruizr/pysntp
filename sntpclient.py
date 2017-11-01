@@ -16,6 +16,7 @@ class SntpClient(InjectError):
         mode_str = NTP.MODE_TABLE[recvPacket.mode]
         if mode_str == 'client':
             logger.info("Ignoring client request from potentially other client")
+            logger.debug("Ignoring packet with contents: \n%s", recvPacket)
             return
         else:
             logger.info("Received %s packet:\n%s", mode_str, recvPacket)

@@ -16,21 +16,17 @@ logger = logging.getLogger(__name__)
 
 class TimeToHighLow:
     """Use descriptor rather than having to repeat a bunch of properties"""
-    _SYSTEM_EPOCH = datetime.date(*time.gmtime(0)[0:3])
-    _NTP_EPOCH = datetime.date(1900, 1, 1)
-    NTP_DELTA = (_SYSTEM_EPOCH - _NTP_EPOCH).days * 24 * 3600
     """delta between system and NTP time"""
     def __set_name__(self, owner, name):
         self.name = name
 
     def __get__(self, instance, owner):
-        return self._to_time(
-                getattr(instance, self.name+'_high'),
-                getattr(instance, self.name+'_low')) - self.NTP_DELTA
+            return self._to_time(
+                    getattr(instance, self.name+'_high'),
+                    getattr(instance, self.name+'_low'))
 
     def __set__(self, instance, value):
-        ntp_value = value + self.NTP_DELTA
-        high, low = self._to_high_low(ntp_value)
+        high, low = self._to_high_low(value)
         setattr(instance, self.name+'_high', high)
         setattr(instance, self.name+'_low', low)
 
@@ -155,6 +151,31 @@ class NTPPacket:
     tx_timestamp = TimeToHighLow()
     ref_timestamp = TimeToHighLow()
 
+    _SYSTEM_EPOCH = datetime.date(*time.gmtime(0)[0:3])
+    _NTP_EPOCH = datetime.date(1900, 1, 1)
+    NTP_DELTA = (_SYSTEM_EPOCH - _NTP_EPOCH).days * 24 * 3600
+
+    def copy(self):
+        new_one = self.__class__()
+        new_one.leap                 = self.leap
+        new_one.version              = self.version
+        new_one.mode                 = self.mode
+        new_one.stratum              = self.stratum
+        new_one.poll                 = self.poll
+        new_one.precision            = self.precision
+        new_one.root_delay           = self.root_delay
+        new_one.root_dispersion      = self.root_dispersion
+        new_one.ref_id               = self.ref_id
+        new_one.ref_timestamp_high   = self.ref_timestamp_high
+        new_one.ref_timestamp_low    = self.ref_timestamp_low
+        new_one.orig_timestamp_high  = self.orig_timestamp_high
+        new_one.orig_timestamp_low   = self.orig_timestamp_low
+        new_one.recv_timestamp_high  = self.recv_timestamp_high
+        new_one.recv_timestamp_low   = self.recv_timestamp_low
+        new_one.tx_timestamp_high    = self.tx_timestamp_high
+        new_one.tx_timestamp_low     = self.tx_timestamp_low
+        return new_one
+
 
     def __init__(self, version=4, mode=4, tx_timestamp=0):
         """Constructor.
@@ -229,7 +250,7 @@ Reference Identifier             : {self.ref_id}
 Reference Timestamp (64)         : {self.get_timestamp_string(self.ref_timestamp)} : {self.ref_timestamp} 
 Originate Timestamp (64)         : {self.get_timestamp_string(self.orig_timestamp)} : {self.orig_timestamp}
 Receive Timestamp (64)           : {self.get_timestamp_string(self.recv_timestamp)} : {self.recv_timestamp}
-Transmit Timestamp (64)          : {self.get_timestamp_string(self.tx_timestamp)}   : {self.tx_timestamp}'''
+Transmit Timestamp (64)          : {self.get_timestamp_string(self.tx_timestamp)} : {self.tx_timestamp}'''
         return packet_str
 
     def get_timestamp_string(self, timestamp):
@@ -243,24 +264,27 @@ Transmit Timestamp (64)          : {self.get_timestamp_string(self.tx_timestamp)
         Raises:
         NTPException -- in case of invalid field
         """
+
+        copy = self.copy()
+        copy.update_time(from_network=False)
         try:
             packed = struct.pack(NTPPacket._PACKET_FORMAT,
-                (self.leap << 6 | self.version << 3 | self.mode),
-                self.stratum,
-                self.poll,
-                self.precision,
-                int(self.root_delay) << 16 | _to_frac(self.root_delay, 16),
-                int(self.root_dispersion) << 16 |
-                _to_frac(self.root_dispersion, 16),
-                self.ref_id,
-                self.ref_timestamp_high,
-                self.ref_timestamp_low,
-                self.orig_timestamp_high,
-                self.orig_timestamp_low,
-                self.recv_timestamp_high,
-                self.recv_timestamp_low,
-                self.tx_timestamp_high,
-                self.tx_timestamp_low)
+                (copy.leap << 6 | copy.version << 3 | copy.mode),
+                copy.stratum,
+                copy.poll,
+                copy.precision,
+                int(copy.root_delay) << 16 | _to_frac(copy.root_delay, 16),
+                int(copy.root_dispersion) << 16 |
+                _to_frac(copy.root_dispersion, 16),
+                copy.ref_id,
+                copy.ref_timestamp_high,
+                copy.ref_timestamp_low,
+                copy.orig_timestamp_high,
+                copy.orig_timestamp_low,
+                copy.recv_timestamp_high,
+                copy.recv_timestamp_low,
+                copy.tx_timestamp_high,
+                copy.tx_timestamp_low)
         except struct.error:
             raise NTPException("Invalid NTP packet fields.")
         return packed
@@ -300,7 +324,23 @@ Transmit Timestamp (64)          : {self.get_timestamp_string(self.tx_timestamp)
         instance.recv_timestamp_low  = unpacked[12]
         instance.tx_timestamp_high   = unpacked[13]
         instance.tx_timestamp_low    = unpacked[14]
+        instance.update_time(from_network=True)
         return instance
+
+    def update_time(self, from_network=True):
+        delta = self.NTP_DELTA
+        if from_network:
+            delta = - delta
+        for item in ('orig', 'recv', 'tx', 'ref'):
+            item_name = item+'_timestamp_high'
+            val = getattr(self, item_name)
+            if val == 0:
+                continue #special case
+            new_val = val + delta
+            if new_val < 0:
+                logger.warning("Invalid timestamp: %s:%f", item_name,val)
+                continue
+            setattr(self, item_name, val + delta)
 
 class SntpCore:
     def __init__(self,address, port, wait_interval, client=False):

@@ -16,6 +16,7 @@ class SntpServer(InjectError):
         if NTP.MODE_TABLE[recvPacket.mode] == 'broadcast':
             logger.info("Ignoring broadcast from potentially other server")
             return
+        logger.debug("Received packet details: \n%s", recvPacket)
         #mode 4 == server
         sendPacket = NTPPacket(version=recvPacket.version,mode=4)
         sendPacket.orig_timestamp_high = recvPacket.tx_timestamp_high
@@ -30,7 +31,7 @@ class SntpServer(InjectError):
         #mode == 5 == broadcast
         broadcastPacket = NTPPacket(tx_timestamp = timestamp, mode=5)
         broadcastPacket.ref_timestamp = broadcastPacket.tx_timestamp-5
-        logger.debug("Broadcast Packet details: \n%s", broadcastPacket)
+        logger.debug("Broadcast packet details: \n%s", broadcastPacket)
         for addr in addrs:
             self.send_queue.put((broadcastPacket,(addr,self.port)))
 

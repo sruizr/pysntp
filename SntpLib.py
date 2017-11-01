@@ -382,7 +382,6 @@ class SntpCore:
     def send_packet(self, socket, pkt, addr):
         self.pre_send_hook(pkt)
         self.socket.sendto(pkt.to_data(),addr)
-        logger.debug("addr now: {}".format(addr))
         logger.info("Sending packet to %s:%d", addr[0], addr[1])
         #logger.debug("Sent Packet details: \n%s", pkt)
 
